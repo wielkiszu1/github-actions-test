@@ -12,9 +12,9 @@ jobs:
           ls -a
           echo $GITHUB_SHA
           echo $GITHUB_REPOSITORY
-          ECHO $GITHUB_WORKSPACE
+          echo $GITHUB_WORKSPACE
           echo "${{ github.token}}"
-      - name: checkout
+      - name: Checkout
         uses: actions/checkout@v1
       - name: List Files After checkout
         run: |
