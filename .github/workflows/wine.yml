@@ -34,6 +34,8 @@ jobs:
         pip install -U databricks-cli
     - name: Configure Databricks CLI
       run: |
+        # We need to write the pipe the conf into databricks configure --token since
+        # that command only takes inputs from stdin. 
         conf=`cat << EOM
         $DATABRICKS_HOST
         $DATABRICKS_TOKEN
