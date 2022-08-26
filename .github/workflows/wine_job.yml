@@ -1,0 +1,219 @@
+name: Wine Quality Machine Learning Pipeline
+
+on: [push]
+#  push:
+#    branches:    
+#      - master
+
+jobs:
+  train:
+    runs-on: ubuntu-18.04
+    env:
+      DATABRICKS_HOST: https://adb-5260745850381774.14.azuredatabricks.net
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DATABRICKS_NOTEBOOK_PATH: /Shared/MLFlow
+      DATABRICKS_CLUSTER_NAME: ML
+      DATABRICKS_CLUSTER_SPARK_VERSION: 7.3.x-cpu-ml-scala2.12
+      DATABRICKS_CLUSTER_NODE_TYPE_ID: Standard_DS3_v2
+      DATABRICKS_CLUSTER_DRIVER_NODE_TYPE_ID: Standard_DS3_v2
+      DATABRICKS_CLUSTER_AUTOTERMINATION_MINUTES: 15
+      DATABRICKS_CLUSTER_WORKERS_MIN: 1
+      DATABRICKS_CLUSTER_WORKERS_MAX: 4
+      AZUREML_SDK: azureml-sdk[databricks]==1.23.0
+      DATABRICKS_JOB_TRAIN_NAME: Wine Quality (Train)
+      DATABRICKS_JOB_BUILDIMAGE_NAME: Wine Quality (Build Container Image)
+    steps:
+    - uses: actions/checkout@v1
+    - name: Set up Python 3.6
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.6
+    - name: Install Databricks CLI
+      run: |
+        python -m pip install --upgrade pip
+        pip install -U databricks-cli
+    - name: Configure Databricks CLI
+      run: |
+        # We need to write the pipe the conf into databricks configure --token since..
+        # that command only takes inputs from stdin... 
+        conf=`cat << EOM
+        $DATABRICKS_HOST
+        $DATABRICKS_TOKEN
+        EOM`
+
+        echo "$conf" | databricks configure --token
+    - name: Create Notebook Path
+      run: 'databricks workspace mkdirs "$DATABRICKS_NOTEBOOK_PATH"'
+    - name: Import Notebooks
+      run: 'databricks workspace import_dir --overwrite notebooks "$DATABRICKS_NOTEBOOK_PATH"'
+    - name: Create / Get Cluster
+      run: |
+        DATABRICKS_CLUSTER_ID=$(databricks clusters list | grep "$DATABRICKS_CLUSTER_NAME" | awk '{print $1}')
+        if [ -z "$DATABRICKS_CLUSTER_ID" ]
+        then
+        echo "Creating new Databricks Cluster..."
+        JSON=`cat << EOM
+        {
+          "cluster_name": "$DATABRICKS_CLUSTER_NAME",
+          "spark_version": "$DATABRICKS_CLUSTER_SPARK_VERSION",
+          "spark_conf": {
+            "spark.databricks.delta.preview.enabled": "true"
+          },
+          "node_type_id": "$DATABRICKS_CLUSTER_NODE_TYPE_ID",
+          "driver_node_type_id": "$DATABRICKS_CLUSTER_DRIVER_NODE_TYPE_ID",
+          "spark_env_vars": {
+            "PYSPARK_PYTHON": "/databricks/python3/bin/python3"
+          },
+          "autotermination_minutes": $DATABRICKS_CLUSTER_AUTOTERMINATION_MINUTES,
+          "enable_elastic_disk": true,
+          "autoscale": {
+            "min_workers": $DATABRICKS_CLUSTER_WORKERS_MIN,
+            "max_workers": $DATABRICKS_CLUSTER_WORKERS_MAX
+          },
+          "init_scripts_safe_mode": false
+        }
+        EOM`
+        DATABRICKS_CLUSTER_ID=$(databricks clusters create --json "$JSON" | jq -r ".cluster_id")
+        sleep 10
+        else
+        echo "Existing Databricks Cluster found (Cluster ID: $DATABRICKS_CLUSTER_ID)"
+        fi
+        echo "DATABRICKS_CLUSTER_ID=${DATABRICKS_CLUSTER_ID}" >> $GITHUB_ENV
+    - name: Start Cluster
+      run: |
+        echo "Checking Cluster State (Cluster ID: $DATABRICKS_CLUSTER_ID)..."
+        DATABRICKS_CLUSTER_STATE=$(databricks clusters get --cluster-id "$DATABRICKS_CLUSTER_ID" | jq -r ".state")
+        echo "Cluster State: $DATABRICKS_CLUSTER_STATE"
+        
+        if [ $DATABRICKS_CLUSTER_STATE == "TERMINATED" ]
+        then
+          echo "Starting Databricks Cluster..."
+          databricks clusters start --cluster-id "$DATABRICKS_CLUSTER_ID"
+          sleep 30
+          DATABRICKS_CLUSTER_STATE=$(databricks clusters get --cluster-id "$DATABRICKS_CLUSTER_ID" | jq -r ".state")
+          echo "Cluster State: $DATABRICKS_CLUSTER_STATE"
+        fi
+        
+        while [ $DATABRICKS_CLUSTER_STATE == "PENDING" ]
+        do
+          sleep 30
+          DATABRICKS_CLUSTER_STATE=$(databricks clusters get --cluster-id "$DATABRICKS_CLUSTER_ID" | jq -r ".state")
+          echo "Cluster State: $DATABRICKS_CLUSTER_STATE"
+        done
+        
+        if [ $DATABRICKS_CLUSTER_STATE == "RUNNING" ]
+        then
+          exit 0
+        else
+          exit 1
+        fi
+    - name: Install Azure ML SDK
+      run: |
+        library_status=$(databricks libraries list --cluster-id $DATABRICKS_CLUSTER_ID | jq -c ".library_statuses[] | select( .library.pypi.package == \"$AZUREML_SDK\" ) | .status" -r)
+        if [ -z "$library_status" ]
+        then
+          echo "Installing $AZUREML_SDK library to $DATABRICKS_CLUSTER_ID..."
+          databricks libraries install --cluster-id "$DATABRICKS_CLUSTER_ID" --pypi-package "$AZUREML_SDK"
+          sleep 10
+          library_status=$(databricks libraries list --cluster-id $DATABRICKS_CLUSTER_ID | jq -c ".library_statuses[] | select( .library.pypi.package == \"$AZUREML_SDK\" ) | .status" -r)
+          echo "Library Status: $library_status"
+        fi
+        
+        while [ $library_status == "PENDING" -o $library_status == "INSTALLING" ]
+        do
+          sleep 30
+          library_status=$(databricks libraries list --cluster-id $DATABRICKS_CLUSTER_ID | jq -c ".library_statuses[] | select( .library.pypi.package == \"$AZUREML_SDK\" ) | .status" -r)
+          echo "Library Status: $library_status"
+        done
+        
+        if [ $library_status == "INSTALLED" ]
+        then
+          exit 0
+        else
+          exit 1
+        fi
+    - name: Create / Get Training Job
+      run: |
+        DATABRICKS_JOB_TRAIN_ID=$(databricks jobs list | grep "$DATABRICKS_JOB_TRAIN_NAME" | awk '{print $1}')
+        if [ -z "$DATABRICKS_JOB_TRAIN_ID" ]
+        then
+        echo "Creating $DATABRICKS_JOB_TRAIN_NAME job..."
+        JSON=`cat << EOM
+        {
+          "notebook_task": {
+            "notebook_path": "$DATABRICKS_NOTEBOOK_PATH/train",
+            "base_parameters": {
+              "alpha": "0.5",
+              "l1_ratio": "0.5"
+            }
+          },
+          "existing_cluster_id": "$DATABRICKS_CLUSTER_ID",
+          "name": "$DATABRICKS_JOB_TRAIN_NAME",
+          "max_concurrent_runs": 3,
+          "timeout_seconds": 86400,
+          "libraries": [],
+          "email_notifications": {}
+        }
+        EOM`
+        DATABRICKS_JOB_TRAIN_ID=$(databricks jobs create --json "$JSON" | jq ".job_id")
+        else
+        echo "Existing $DATABRICKS_JOB_TRAIN_NAME job found (Job ID: $DATABRICKS_JOB_TRAIN_ID)."
+        fi
+        echo "DATABRICKS_JOB_TRAIN_ID=$DATABRICKS_JOB_TRAIN_ID" >> $GITHUB_ENV
+    - name: Run Training Jobs
+      run: |
+        echo "Running job with ID $DATABRICKS_JOB_TRAIN_ID with alpha=0.5, l1_ratio=0.5..."
+        run_id1=$(databricks jobs run-now --job-id $DATABRICKS_JOB_TRAIN_ID --notebook-params '{ "alpha": "0.5", "l1_ratio": "0.5" }' | jq ".run_id")
+        echo "  Run ID: $run_id1"
+        
+        run_state=$(databricks runs get --run-id $run_id1 | jq -r ".state.life_cycle_state")
+        echo "Run State (ID $run_id1): $run_state"
+        while [ $run_state == "RUNNING" -o $run_state == "PENDING" ]
+        do
+          sleep 30
+          run_state=$(databricks runs get --run-id $run_id1 | jq -r ".state.life_cycle_state")
+          echo "Run State (ID $run_id1): $run_state"
+        done
+        result_state1=$(databricks runs get --run-id $run_id1 | jq -r ".state.result_state")
+        state_message1=$(databricks runs get --run-id $run_id1 | jq -r ".state.state_message")
+        echo "Result State (ID $run_id1): $result_state1, Message: $state_message1"
+        
+        echo "Running job with ID $DATABRICKS_JOB_TRAIN_ID with alpha=0.3, l1_ratio=0.3..."
+        run_id2=$(databricks jobs run-now --job-id $DATABRICKS_JOB_TRAIN_ID --notebook-params '{ "alpha": "0.3", "l1_ratio": "0.3" }' | jq ".run_id")
+        echo "  Run ID: $run_id2"
+        
+        echo "Running job with ID $DATABRICKS_JOB_TRAIN_ID with alpha=0.1, l1_ratio=0.1..."
+        run_id3=$(databricks jobs run-now --job-id $DATABRICKS_JOB_TRAIN_ID --notebook-params '{ "alpha": "0.1", "l1_ratio": "0.1" }' | jq ".run_id")
+        echo "  Run ID: $run_id3"
+        
+        run_state=$(databricks runs get --run-id $run_id2 | jq -r ".state.life_cycle_state")
+        echo "Run State (ID $run_id2): $run_state"
+        while [ $run_state == "RUNNING" -o $run_state == "PENDING" ]
+        do
+          sleep 30
+          run_state=$(databricks runs get --run-id $run_id2 | jq -r ".state.life_cycle_state")
+          echo "Run State (ID $run_id2): $run_state"
+        done
+        result_state2=$(databricks runs get --run-id $run_id2 | jq -r ".state.result_state")
+        state_message2=$(databricks runs get --run-id $run_id2 | jq -r ".state.state_message")
+        echo "Result State (ID $run_id2): $result_state2, Message: $state_message2"
+        
+        run_state=$(databricks runs get --run-id $run_id3 | jq -r ".state.life_cycle_state")
+        echo "Run State (ID $run_id3): $run_state"
+        while [ $run_state == "RUNNING" -o $run_state == "PENDING" ]
+        do
+          sleep 30
+          run_state=$(databricks runs get --run-id $run_id3 | jq -r ".state.life_cycle_state")
+          echo "Run State (ID $run_id3): $run_state"
+        done
+        result_state3=$(databricks runs get --run-id $run_id3 | jq -r ".state.result_state")
+        state_message3=$(databricks runs get --run-id $run_id3 | jq -r ".state.state_message")
+        echo "Result State (ID $run_id3): $result_state3, Message: $state_message3"
+        
+        if [ $result_state1 == "SUCCESS" -a $result_state2 == "SUCCESS" -a $result_state3 == "SUCCESS" ]
+        then
+          exit 0
+        else
+          exit 1
+        fi
+    
