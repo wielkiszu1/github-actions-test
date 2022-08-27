@@ -1,4 +1,4 @@
-name: Wine Quality Machine Learning Pipeline
+name: Wine Quality Machine Learning Pipeline.
 
 on: [push]
 #  push:
