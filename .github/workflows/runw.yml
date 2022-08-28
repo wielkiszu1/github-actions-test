@@ -1,7 +1,6 @@
 name: Run a notebook in databricks on PRs
 on:
  [push]
-
 jobs:
  run-databricks-notebook:
    runs-on: ubuntu-latest
