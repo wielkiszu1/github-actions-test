@@ -1,0 +1,21 @@
+name: Run a notebook in databricks on PRs.
+on:
+ [push]
+jobs:
+ run-databricks-notebook:
+   runs-on: ubuntu-latest
+   steps:
+     - name: Checkout repo
+       uses: actions/checkout@v2
+     - name: Run a databricks notebook
+       uses: databricks/run-notebook@v0
+       with:
+        local-notebook-path: notebooks/test_notebook.py
+        databricks-host: https://adb-5260745850381774.14.azuredatabricks.net
+        databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
+        new-cluster-json: >
+          {
+            "num_workers": 1,
+            "spark_version": "7.3.x-cpu-ml-scala2.12",
+            "node_type_id": "Standard_DS3_v2"
+          }
