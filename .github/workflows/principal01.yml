@@ -24,7 +24,6 @@ jobs:
         databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
         new-cluster-json: >
           {
-            "cluster_name": "HGitCluster01",
             "num_workers": 1,
             "spark_version": "7.3.x-cpu-ml-scala2.12",
             "node_type_id": "Standard_DS3_v2"
