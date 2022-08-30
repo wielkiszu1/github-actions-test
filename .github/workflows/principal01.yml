@@ -1,0 +1,30 @@
+name: Run a notebook in databricks on PRs
+on:
+ [push]
+
+jobs:
+ run-databricks-notebook:
+   runs-on: ubuntu-latest
+   steps:
+     - name: Checkout repo
+       uses: actions/checkout@v2
+     - name: Generate and save AAD Token
+       run: |
+          echo "DATABRICKS_TOKEN=$(curl -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+            https://login.microsoftonline.com/bdaa4305-4f51-4d98-bf92-2b74626eb6fa/oauth2/v2.0/token \
+            -d 'client_id=309dad18-400c-4cae-930d-5ed76ed92c01' \
+            -d 'grant_type=client_credentials' \
+            -d 'scope=2ff814a6-3304-4ab8-85cb-cd0e6f879c1d%2F.default' \
+            -d 'client_secret=h9Z8Q~ZmAQ3YpmoekOgs3ey0kejtlgHey6MuKa1I' |  jq -r  '.access_token')" >> $GITHUB_ENV
+     - name: Run a databricks notebook
+       uses: databricks/run-notebook@v0
+       with:
+        local-notebook-path: notebooks\hGitTest02.py
+        databricks-host: https://adb-5260745850381774.14.azuredatabricks.net
+        databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
+        new-cluster-json: >
+          {
+            "num_workers": 1,
+            "spark_version": "7.3.x-cpu-ml-scala2.12",
+            "node_type_id": "Standard_DS3_v2"
+          }
