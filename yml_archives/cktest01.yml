@@ -10,7 +10,7 @@ jobs:
      - name: Run a databricks notebook
        uses: databricks/run-notebook@v0
        with:
-        local-notebook-path: notebooks/hub_AL_GitHub.py
+        local-notebook-path: notebooks/hGitTest02.py
         databricks-host: https://adb-5260745850381774.14.azuredatabricks.net
         databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
         new-cluster-json: >
