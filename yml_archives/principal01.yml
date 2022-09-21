@@ -1,4 +1,4 @@
-name: Run a notebook in databricks on PRs
+name: Run a notebook in databricks on PRs.
 on:
  [push]
 
@@ -21,7 +21,6 @@ jobs:
        with:
         local-notebook-path: notebooks\hGitTest02.py
         databricks-host: https://adb-5260745850381774.14.azuredatabricks.net
-        databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
         new-cluster-json: >
           {
             "num_workers": 1,
